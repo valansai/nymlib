@@ -1,0 +1,12 @@
+[package]
+name = "nymlib"
+version = "0.1.0"
+edition = "2024"
+description = "Nymlib"
+license = "MIT"
+
+[dependencies]
+serialize_derive = { path = "../serialize_derive" }
+serialize = { path = "../serialize" }
+nymsocket = { path = "../nymsocket" }
+crypto = { path = "../crypto" }

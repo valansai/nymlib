@@ -1,0 +1,8 @@
+[package]
+name = "serialize"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serialize_derive = { path = "../serialize_derive" }
+openssl = "0.10"

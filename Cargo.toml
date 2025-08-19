@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "nymsocket",
+    "serialize",
+    "serialize_derive",
+    "nymlib"
+, "crypto"]

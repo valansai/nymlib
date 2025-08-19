@@ -1,0 +1,13 @@
+[package]
+name = "nymsocket"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serialize = { path = "../serialize" }
+serialize_derive = { path = "../serialize_derive" }
+tokio = { version = "1.0", features = ["full"] }
+nym-sdk = { git = "https://github.com/nymtech/nym", branch = "master" }
+ed25519-zebra = { version = "4.1", features = ["alloc"] }
+rand = "0.8" 
+clap = { version = "4.0.0-rc.3" }
