@@ -10,3 +10,4 @@ serialize_derive = { path = "../serialize_derive" }
 serialize = { path = "../serialize" }
 nymsocket = { path = "../nymsocket" }
 crypto = { path = "../crypto" }
+nym-sdk = { git = "https://github.com/nymtech/nym", branch = "master" }
