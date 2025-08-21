@@ -1,11 +1,12 @@
 [package]
 name = "crypto"
-version = "0.1.0"
-edition = "2024"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
 
 [dependencies]
-serialize = { path = "../serialize" }
-serialize_derive = { path = "../serialize_derive" }
-openssl = "0.10"
-rand = "0.8.5"
-zeroize = "1.8.1"
+serialize = { workspace = true }
+serialize_derive = { workspace = true }
+openssl = { workspace = true }
+rand = { workspace = true }
+zeroize = { workspace = true }

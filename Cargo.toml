@@ -3,5 +3,28 @@ members = [
     "nymsocket",
     "serialize",
     "serialize_derive",
-    "nymlib"
-, "crypto"]
+    "nymlib",
+    "crypto"
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+serialize = { path = "serialize" }
+serialize_derive = { path = "serialize_derive" }
+nymsocket = { path = "nymsocket" }
+crypto = { path = "crypto" }  
+nym-sdk = { git = "https://github.com/nymtech/nym", branch = "master" }
+openssl = "0.10"
+rand = "0.8.5"  # Unified version
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "derive"] }
+tokio = { version = "1.0", features = ["rt", "net", "io-std"] }  # Reduced features
+ed25519-zebra = { version = "4.1", features = ["alloc"] }
+clap = { version = "4.0.0-rc.3" }
+zeroize = "1.8.1"

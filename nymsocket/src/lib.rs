@@ -172,6 +172,16 @@ impl From<&str> for SockAddr {
     }
 }
 
+impl ToString for SockAddr {
+    fn to_string(&self) -> String {
+        match self {
+            SockAddr::NymAddress(recipient) => recipient.to_string(),
+            SockAddr::SenderTag(tag) => tag.to_string(),
+            SockAddr::Null => "null".to_string(),
+        }
+    }
+}
+
 impl SockAddr {
     pub fn is_individual(&self) -> bool {
         matches!(self, SockAddr::NymAddress(_))

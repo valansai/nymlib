@@ -1,8 +1,9 @@
 [package]
 name = "serialize"
-version = "0.1.0"
-edition = "2024"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
 
 [dependencies]
-serialize_derive = { path = "../serialize_derive" }
-openssl = "0.10"
+serialize_derive = { workspace = true }
+openssl = { workspace = true }

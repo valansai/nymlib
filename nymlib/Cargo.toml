@@ -1,13 +1,13 @@
 [package]
 name = "nymlib"
-version = "0.1.0"
-edition = "2024"
+version = { workspace = true }
+edition = { workspace = true }
 description = "Nymlib"
-license = "MIT"
+license = { workspace = true }
 
 [dependencies]
-serialize_derive = { path = "../serialize_derive" }
-serialize = { path = "../serialize" }
-nymsocket = { path = "../nymsocket" }
-crypto = { path = "../crypto" }
-nym-sdk = { git = "https://github.com/nymtech/nym", branch = "master" }
+serialize = { workspace = true }
+serialize_derive = { workspace = true }
+nymsocket = { workspace = true }
+crypto = { workspace = true }
+nym-sdk = { workspace = true }
