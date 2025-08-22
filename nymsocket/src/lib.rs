@@ -62,12 +62,14 @@ use tokio::time::{
     Duration
 };
 
+use std::collections::HashMap;
+
 
 
 ////////////////////////////////////////// SockAddr
 
 
-#[derive(PartialEq, Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub enum SockAddr {
     NymAddress(Recipient),
     SenderTag(AnonymousSenderTag),
@@ -429,6 +431,7 @@ pub struct Socket {
     pub already_send: Vec<[u8; 32]>,
     pub check_stale: bool,
     pub stale_expiration_time: u64,
+    pub muted_addresses: Arc<Mutex<HashMap<[u8; 32], u64>>>,
     pub recv: Arc<Mutex<Vec<SocketMessage>>>,
 }
 
@@ -442,6 +445,7 @@ impl Socket {
             already_send: Vec::new(),
             check_stale: false,
             stale_expiration_time: u64::MAX,
+            muted_addresses: Arc::new(Mutex::new(HashMap::new())),
             recv: Arc::new(Mutex::new(Vec::new())),
         })
     }
@@ -455,8 +459,34 @@ impl Socket {
             already_send: Vec::new(),
             check_stale: false,
             stale_expiration_time: u64::MAX,
+            muted_addresses: Arc::new(Mutex::new(HashMap::new())),
             recv: Arc::new(Mutex::new(Vec::new())),
         })
+    }
+
+    pub async fn mute_address(&self, address: impl Into<SockAddr>, duration_secs: u64) {
+        let address = address.into();
+        let addr_hash = address.get_hash(); 
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let expiration_time = current_time + duration_secs;
+
+        let mut muted = self.muted_addresses.lock().await;
+        muted.insert(addr_hash, expiration_time);
+        println!("[*] Socket::mute_address() - Muted address with hash {:x?} until timestamp {}",
+            addr_hash, 
+            expiration_time);
+    }
+
+    pub async fn unmute_address(&self, address: impl Into<SockAddr>) {
+        let address = address.into();
+        let addr_hash = address.get_hash();
+        let mut muted = self.muted_addresses.lock().await;
+        if muted.remove(&addr_hash).is_some() {
+            println!("[*] Socket::unmute_address() - Unmuted address with hash {:x?}", addr_hash);
+        }
     }
 
     pub async fn listen(&mut self) {
@@ -512,6 +542,11 @@ impl Socket {
                                 .unwrap()
                                 .as_secs();
 
+                            {
+                                let mut muted = self.muted_addresses.lock().await;
+                                muted.retain(|_, &mut expiration| expiration > current_time);
+                            }
+
                             for message in messages {
                                 let mut stream = DataStream::default();
                                 stream.write(message.message.as_slice());
@@ -528,6 +563,16 @@ impl Socket {
 
                                         if let Some(sender_tag) = message.sender_tag {
                                             msg.from = SockAddr::from(sender_tag);
+                                        }
+
+                                        let is_muted = {
+                                            let muted = self.muted_addresses.lock().await;
+                                            muted.get(&msg.from.get_hash()).map_or(false, |&expiration| expiration > current_time)
+                                        };
+
+                                        if is_muted {
+                                            println!("[!] Socket::listen() - Skipped muted message from {:?}", msg.from);
+                                            continue;
                                         }
 
                                         let mut recv = self.recv.lock().await;
@@ -901,5 +946,69 @@ mod tests {
             let sent = socket.send(msg_data.clone(), message.from.clone()).await;
             assert!(sent, "Failed to send reply to received message");
         }
+    }
+
+
+    
+    #[tokio::test]
+    async fn test_mute_address() {
+        let mut socket = Socket::new_ephemeral(SocketMode::Individual)
+            .await
+            .expect("Failed to create socket");
+
+        let mut listen_socket = socket.clone();
+        tokio::spawn(async move {
+            listen_socket.listen().await;
+        });
+
+        let addr = socket.getsockaddr().await.expect("Failed to get address");
+        let addr_hash = addr.get_hash(); 
+
+        socket.mute_address(addr.clone(), 30).await;
+
+        {
+            let muted = socket.muted_addresses.lock().await;
+            assert!(muted.contains_key(&addr_hash), "Address hash should be muted");
+        }
+
+        let msg_data = b"Test message".to_vec();
+        let sent = socket.send(msg_data.clone(), addr.clone()).await;
+        assert!(sent, "Failed to send message");
+
+        sleep(Duration::from_secs(10)).await;
+
+        {
+            let received_messages = socket.recv.lock().await;
+            assert!(received_messages.is_empty(), "Received messages from muted address");
+        } 
+
+        sleep(Duration::from_secs(33)).await;
+
+        let sent = socket.send(msg_data.clone(), addr.clone()).await;
+        assert!(sent, "Failed to send message after mute expiration");
+
+        sleep(Duration::from_secs(10)).await;
+
+        {
+            let received_messages = socket.recv.lock().await;
+            assert!(!received_messages.is_empty(), "No messages received after mute expiration");
+        } 
+
+        socket.mute_address(addr.clone(), 30).await;
+        socket.unmute_address(addr.clone()).await;
+        {
+            let muted = socket.muted_addresses.lock().await;
+            assert!(!muted.contains_key(&addr_hash), "Address hash should be unmuted");
+        } 
+
+        let sent = socket.send(b"Unmuted message".to_vec(), addr).await;
+        assert!(sent, "Failed to send message after unmuting");
+
+        sleep(Duration::from_secs(10)).await;
+
+        {
+            let received_messages = socket.recv.lock().await;
+            assert!(!received_messages.is_empty(), "No messages received after unmuting");
+        } 
     }
 }
