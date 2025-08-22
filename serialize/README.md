@@ -39,6 +39,8 @@ These traits make the framework **flexible and extensible**, covering:
 
 ---
 
+For more techincal details about serialize see [DEVELOPERS.md](./DEVELOPERS.md) 
+
 
 ---
 ### Basic Writing and Reading Bytes
