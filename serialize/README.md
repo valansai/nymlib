@@ -4,7 +4,7 @@
 **`serialize`** is a lightweight serialization framework that provides the **`DataStream`** type a unified, in-memory byte buffer designed for efficient binary I/O. It offers a cursor-based interface for **reading, writing, seeking, and modifying data**,  
 while automatically tracking progress behind the scenes. At its core, `serialize` makes it simple to move between structured Rust values and raw bytes   through a consistent and extensible API.
 
-SEE serialize[DEVELOPERS.md](./DEVELOPERS.md) 
+SEE [DEVELOPERS.md](./DEVELOPERS.md) 
 
 
 ---
