@@ -2,7 +2,6 @@
 
 **`crypto`** is cryptographic library for managing key pairs (ECDSA and RSA), digital signatures, and hybrid encryption/decryption operations, built with OpenSSL
 
-SEE [DEVELOPERS.md](./DEVELOPERS.md) 
 
 
 ### This library supports:
@@ -33,12 +32,7 @@ A Keyring is a core struct that serves as a secure container and manager for a p
   - Serialization: Supports custom serialization/deserialization for persistence (e.g., to disk or network), with flags to control what data is included (e.g., exclude private keys for network transmission).
 
 
- 
-
-
-
-
-
+ For more techincal details about crypto see [DEVELOPERS.md](./DEVELOPERS.md) 
 
 
 ## Usage
