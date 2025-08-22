@@ -40,6 +40,10 @@ use serialize::{
 
 use zeroize::Zeroize; 
 
+use std::fs::{self, File};
+use std::io::Write;
+use std::path::Path;
+
 pub const ALGORITHM_ECDSA: u8 = 1;
 pub const ALGORITHM_RSA: u8 = 2;
 pub const ALGORITHM_ECDHE: u8 = 3;
@@ -514,6 +518,52 @@ impl Keyring {
             _ => Err(CryptoError::new_error_verification("Invalid signature algorithm flag")),
         }
     }
+
+
+    pub fn write_to_disk(&self, folder: &std::path::Path) -> bool {
+        let keyring_path = folder.join("key.ring");
+
+        let mut stream = serialize::DataStream::new(serialize::SER_DISK, serialize::VERSION);
+        stream.stream_in(self); 
+        let serialized_data = stream.data; 
+
+        let mut file = match File::create(&keyring_path) {
+            Ok(file) => file,
+            Err(_) => return false,
+        };
+        if file.write_all(&serialized_data).is_err() {
+            return false;
+        }
+
+        true
+    }
+
+
+    pub fn read_from_disk(folder: &std::path::Path) -> Result<Self, std::io::Error> {
+        use std::fs::{self, File};
+        use std::io::Write;
+        use std::path::Path;
+        use std::io::Read;
+
+        let keyring_path = folder.join("key.ring");
+        if !keyring_path.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("key.ring file does not exist at '{}'", keyring_path.display()),
+            ));
+        }
+        let mut file = File::open(&keyring_path)?;
+        let mut serialized_data = Vec::new();
+        file.read_to_end(&mut serialized_data)?;
+
+        let mut stream = serialize::DataStream::new(serialize::SER_DISK, serialize::VERSION);
+        stream.write(&serialized_data);
+        let keyring = stream.stream_out::<Keyring>().map_err(|e| std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Failed to deserialize key.ring: {}", e),
+        ))?;
+        Ok(keyring)
+    }
 }
 
 macro_rules! impl_sign_for_keypair {
@@ -627,6 +677,10 @@ impl_serialize_for_keypair!(RsaKeyPair);
 mod tests {
     use super::*;
     use rand::RngCore;
+    use std::fs;
+    use std::path::Path;
+    use tempfile::TempDir;
+
 
     #[test]
     fn ec_keypair_generation() {
@@ -784,5 +838,27 @@ mod tests {
         };
         let result = keyring.decrypt(ALGORITHM_ECDHE, &package);
         assert!(matches!(result, Err(CryptoError::ErrorInvalidKey { .. })));
+    }
+
+    #[test]
+    fn keyring_write_read_disk() {
+        let temp_dir = TempDir::new().expect("Failed to create temporary directory");
+        let folder = temp_dir.path();
+
+        let original_keyring = Keyring::new().expect("Failed to create keyring");
+
+        let write_success = original_keyring.write_to_disk(folder);
+        assert!(write_success, "Failed to write keyring to disk");
+
+        let read_keyring = Keyring::read_from_disk(folder).expect("Failed to read keyring from disk");
+
+        assert_eq!(
+            original_keyring.ec_keypair, read_keyring.ec_keypair,
+            "EC keypair mismatch after read from disk"
+        );
+        assert_eq!(
+            original_keyring.rsa_keypair, read_keyring.rsa_keypair,
+            "RSA keypair mismatch after read from disk"
+        );
     }
 }

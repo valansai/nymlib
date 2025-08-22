@@ -28,3 +28,4 @@ tokio = { version = "1.0", features = ["rt", "net", "io-std"] }  # Reduced featu
 ed25519-zebra = { version = "4.1", features = ["alloc"] }
 clap = { version = "4.0.0-rc.3" }
 zeroize = "1.8.1"
+tempfile = "3.10"

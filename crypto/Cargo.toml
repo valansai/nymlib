@@ -10,3 +10,4 @@ serialize_derive = { workspace = true }
 openssl = { workspace = true }
 rand = { workspace = true }
 zeroize = { workspace = true }
+tempfile = { workspace = true }
