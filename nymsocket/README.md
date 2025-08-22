@@ -4,6 +4,8 @@
 
 **`nymsocket`** interface for sending and receiving messages over the Nym mixnet, along with serialization utilities for handling diffrent of data structures like addresses and messages. Key components include:
 
+
+
 - **SockAddr**: Enum for Nym addresses (`NymAddress`), anonymous sender tags (`SenderTag`), or null addresses (`Null`).
 - **SocketMessage**: Struct holds sender address parsed into ```SockAddr```, data payload, and timestamp.
 - **Client**: Supports standard (persistent storage) and ephemeral (in-memory) Nym clients.
@@ -20,6 +22,11 @@
 - Persistent (`StandardClient`) and in-memory (`EphemeralClient`) client support.
 - Thread-safe operations with `Arc<Mutex<...>>` for shared state.
 - Custom serialization for addresses and messages.
+
+
+For more techincal details about nymsocket see [DEVELOPERS.md](./DEVELOPERS.md) 
+
+## Examples 
 
 ### Creating a Socket
 
