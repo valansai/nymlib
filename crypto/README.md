@@ -2,6 +2,9 @@
 
 **`crypto`** is cryptographic library for managing key pairs (ECDSA and RSA), digital signatures, and hybrid encryption/decryption operations, built with OpenSSL
 
+SEE [DEVELOPERS.md](./DEVELOPERS.md) 
+
+
 ### This library supports:
   - ECDSA (secp256k1 curve) for signing/verification.
   - RSA (3072-bit minimum) for signing/verification and encryption.
