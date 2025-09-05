@@ -673,12 +673,14 @@ impl Socket {
 
         if sent {
             self.metrics.total_bytes_sent += serialized.len() as u64;
-            println!("[*] Socket::send() - Message sent to {:?} in mode {:?}", recipient, self.mode);
+            // TODO: Use login instead of printing to console
+            // println!("[*] Socket::send() - Message sent to {:?} in mode {:?}", recipient, self.mode);
             if self.mode == SocketMode::Anonymous && !self.already_send.contains(&recipient.get_hash()) {
                 self.already_send.push(recipient.get_hash());
             }
         } else {
-            println!("[!] Socket::send() - Failed to send message to {:?}", recipient);
+            // TODO: Use login instead of printing to console
+            // println!("[!] Socket::send() - Failed to send message to {:?}", recipient);
         }
 
         sent
