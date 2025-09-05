@@ -433,6 +433,7 @@ pub struct Socket {
     pub stale_expiration_time: u64,
     pub muted_addresses: Arc<Mutex<HashMap<[u8; 32], u64>>>,
     pub recv: Arc<Mutex<Vec<SocketMessage>>>,
+    pub extra_surbs: Option<u32>
 }
 
 impl Socket {
@@ -447,6 +448,8 @@ impl Socket {
             stale_expiration_time: u64::MAX,
             muted_addresses: Arc::new(Mutex::new(HashMap::new())),
             recv: Arc::new(Mutex::new(Vec::new())),
+            extra_surbs: None,
+
         })
     }
 
@@ -461,6 +464,8 @@ impl Socket {
             stale_expiration_time: u64::MAX,
             muted_addresses: Arc::new(Mutex::new(HashMap::new())),
             recv: Arc::new(Mutex::new(Vec::new())),
+            extra_surbs: None,
+
         })
     }
 
@@ -612,7 +617,11 @@ impl Socket {
             SocketMode::Individual => IncludedSurbs::ExposeSelfAddress,
             SocketMode::Anonymous => {
                 if self.already_send.contains(&recipient.get_hash()) {
-                    IncludedSurbs::ExposeSelfAddress
+                    if self.extra_surbs.unwrap_or(0) == 0 {
+                        IncludedSurbs::ExposeSelfAddress
+                    } else {
+                        IncludedSurbs::Amount(self.extra_surbs.unwrap())
+                    }
                 } else {
                     IncludedSurbs::Amount(10)
                 }
