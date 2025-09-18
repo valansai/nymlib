@@ -515,7 +515,7 @@ impl Socket {
             tokio::select! {
                 Ok(signal) = rx.recv() => {
                     if signal {
-                        println!("[!] Socket::listen() - Stop signal received.");
+                        // println!("[!] Socket::listen() - Stop signal received.");
                         break;
                     }
                 }
@@ -530,7 +530,7 @@ impl Socket {
                     let client_ref = match guard.as_mut() {
                         Some(c) => c,
                         None => {
-                            println!("[!] Socket::listen() - Client not initialized.");
+                            // println!("[!] Socket::listen() - Client not initialized.");
                             return;
                         }
                     };
