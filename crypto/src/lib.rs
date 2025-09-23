@@ -277,7 +277,48 @@ impl Keyring {
         })
     }
 
-    pub fn encrypt(&self, flags: u8, plaintext: &[u8]) -> Result<EncryptedPackage, CryptoError> {
+    // Helper function to derive shared secret for ECDHE
+    fn derive_shared_secret(
+        sender_privkey: &[u8],
+        receiver_pubkey: &[u8],
+    ) -> Result<Vec<u8>, CryptoError> {
+        let priv_ec = openssl::ec::EcKey::private_key_from_der(sender_privkey)
+            .map_err(|e| CryptoError::new_error_invalid_key(&format!("Failed to parse sender private key: {}", e)))?;
+        let pub_ec = openssl::ec::EcKey::public_key_from_der(receiver_pubkey)
+            .map_err(|e| CryptoError::new_error_invalid_key(&format!("Failed to parse receiver public key: {}", e)))?;
+
+        let priv_pkey = PKey::from_ec_key(priv_ec)
+            .map_err(|e| CryptoError::new_error_key_generation(&format!("Failed to create PKey from sender private key: {}", e)))?;
+        let pub_pkey = PKey::from_ec_key(pub_ec)
+            .map_err(|e| CryptoError::new_error_key_generation(&format!("Failed to create PKey from receiver public key: {}", e)))?;
+
+        let mut deriver = openssl::derive::Deriver::new(&priv_pkey)
+            .map_err(|e| CryptoError::new_error_openssl(e))?;
+        deriver
+            .set_peer(&pub_pkey)
+            .map_err(|e| CryptoError::new_error_openssl(e))?;
+        let shared_secret = deriver
+            .derive_to_vec()
+            .map_err(|e| CryptoError::new_error_openssl(e))?;
+
+        let mut hasher = openssl::hash::Hasher::new(MessageDigest::sha256())
+            .map_err(|e| CryptoError::new_error_openssl(e))?;
+        hasher
+            .update(&shared_secret)
+            .map_err(|e| CryptoError::new_error_openssl(e))?;
+        let digest = hasher
+            .finish()
+            .map_err(|e| CryptoError::new_error_openssl(e))?;
+        Ok(digest.to_vec())
+    }
+
+    // New encrypt function using sender and receiver keyrings
+    pub fn encrypt(
+        sender: &Keyring,
+        receiver: &Keyring,
+        flags: u8,
+        plaintext: &[u8],
+    ) -> Result<EncryptedPackage, CryptoError> {
         if plaintext.is_empty() {
             return Err(CryptoError::new_error_invalid_input("Empty plaintext provided"));
         }
@@ -285,7 +326,7 @@ impl Keyring {
         match flags {
             ALGORITHM_RSA => {
                 let mut aes_key = vec![0u8; 32];
-                let mut iv = vec![0u8; 12]; 
+                let mut iv = vec![0u8; 12];
 
                 rand_bytes(&mut aes_key)
                     .map_err(|e| CryptoError::new_error_openssl(e))?;
@@ -302,19 +343,18 @@ impl Keyring {
                 .map_err(|e| CryptoError::new_error_openssl(e))?;
 
                 let mut ciphertext = vec![0; plaintext.len() + cipher.block_size()];
-                let mut tag = vec![0; 16]; 
+                let mut tag = vec![0; 16];
                 let mut count = crypter
                     .update(plaintext, &mut ciphertext)
                     .map_err(|e| CryptoError::new_error_openssl(e))?;
                 count += crypter
                     .finalize(&mut ciphertext[count..])
                     .map_err(|e| CryptoError::new_error_openssl(e))?;
-
                 crypter.get_tag(&mut tag).map_err(|e| CryptoError::new_error_openssl(e))?;
                 ciphertext.truncate(count);
                 ciphertext.extend_from_slice(&tag);
 
-                let encrypted_key = self.rsa_keypair.encrypt(&aes_key)?;
+                let encrypted_key = receiver.rsa_keypair.encrypt(&aes_key)?;
 
                 Ok(EncryptedPackage {
                     encrypted_key,
@@ -333,34 +373,9 @@ impl Keyring {
                     .public_key_to_der()
                     .map_err(|e| CryptoError::new_error_serialization(&format!("Failed to serialize ephemeral public key: {}", e)))?;
 
-                let peer_pub = openssl::ec::EcKey::public_key_from_der(&self.ec_keypair.pubkey)
-                    .map_err(|e| CryptoError::new_error_invalid_key(&format!("Failed to parse peer public key: {}", e)))?;
-                let shared_secret = {
-                    let priv_pkey = PKey::from_ec_key(eph_key)
-                        .map_err(|e| CryptoError::new_error_key_generation(&format!("Failed to create PKey from ephemeral key: {}", e)))?;
-                    let pub_pkey = PKey::from_ec_key(peer_pub)
-                        .map_err(|e| CryptoError::new_error_key_generation(&format!("Failed to create PKey from peer public key: {}", e)))?;
-                    let mut deriver = openssl::derive::Deriver::new(&priv_pkey)
-                        .map_err(|e| CryptoError::new_error_openssl(e))?;
-                    deriver
-                        .set_peer(&pub_pkey)
-                        .map_err(|e| CryptoError::new_error_openssl(e))?;
-                    deriver
-                        .derive_to_vec()
-                        .map_err(|e| CryptoError::new_error_openssl(e))?
-                };
+                let aes_key = Self::derive_shared_secret(&sender.ec_keypair.privkey, &receiver.ec_keypair.pubkey)?;
 
-                let mut hasher = openssl::hash::Hasher::new(MessageDigest::sha256())
-                    .map_err(|e| CryptoError::new_error_openssl(e))?;
-                hasher
-                    .update(&shared_secret)
-                    .map_err(|e| CryptoError::new_error_openssl(e))?;
-                let digest = hasher
-                    .finish()
-                    .map_err(|e| CryptoError::new_error_openssl(e))?;
-                let aes_key = &digest[..32];
-
-                let mut iv = vec![0u8; 12]; 
+                let mut iv = vec![0u8; 12];
                 rand_bytes(&mut iv)
                     .map_err(|e| CryptoError::new_error_openssl(e))?;
 
@@ -368,7 +383,7 @@ impl Keyring {
                 let mut crypter = openssl::symm::Crypter::new(
                     cipher,
                     openssl::symm::Mode::Encrypt,
-                    aes_key,
+                    &aes_key[..32],
                     Some(&iv),
                 )
                 .map_err(|e| CryptoError::new_error_openssl(e))?;
@@ -378,11 +393,9 @@ impl Keyring {
                 let mut count = crypter
                     .update(plaintext, &mut ciphertext)
                     .map_err(|e| CryptoError::new_error_openssl(e))?;
-
                 count += crypter
                     .finalize(&mut ciphertext[count..])
                     .map_err(|e| CryptoError::new_error_openssl(e))?;
-
                 crypter.get_tag(&mut tag).map_err(|e| CryptoError::new_error_openssl(e))?;
                 ciphertext.truncate(count);
                 ciphertext.extend_from_slice(&tag);
@@ -397,14 +410,21 @@ impl Keyring {
             _ => Err(CryptoError::new_error_invalid_input("Invalid encryption algorithm flag")),
         }
     }
-    pub fn decrypt(&self, flags: u8, package: &EncryptedPackage) -> Result<Vec<u8>, CryptoError> {
+
+    // New decrypt function using sender and receiver keyrings
+    pub fn decrypt(
+        receiver: &Keyring,
+        sender: &Keyring,
+        flags: u8,
+        package: &EncryptedPackage,
+    ) -> Result<Vec<u8>, CryptoError> {
         if package.ciphertext.len() < 16 {
             return Err(CryptoError::new_error_invalid_input("Ciphertext too short to contain authentication tag"));
         }
 
         match flags {
             ALGORITHM_RSA => {
-                let aes_key = self.rsa_keypair.decrypt(&package.encrypted_key)?;
+                let aes_key = receiver.rsa_keypair.decrypt(&package.encrypted_key)?;
 
                 let cipher = openssl::symm::Cipher::aes_256_gcm();
                 let (ciphertext, tag) = package.ciphertext.split_at(package.ciphertext.len() - 16);
@@ -421,11 +441,9 @@ impl Keyring {
                 crypter.set_tag(&tag).map_err(|e| CryptoError::new_error_openssl(e))?;
 
                 let mut plaintext = vec![0; ciphertext.len() + cipher.block_size()];
-
                 let mut count = crypter
                     .update(ciphertext, &mut plaintext)
                     .map_err(|e| CryptoError::new_error_openssl(e))?;
-
                 count += crypter
                     .finalize(&mut plaintext[count..])
                     .map_err(|e| CryptoError::new_error_openssl(e))?;
@@ -437,35 +455,7 @@ impl Keyring {
                     return Err(CryptoError::new_error_invalid_key("Missing or invalid ephemeral public key"));
                 }
 
-                let eph_pub = openssl::ec::EcKey::public_key_from_der(&package.ephemeral_pubkey)
-                    .map_err(|e| CryptoError::new_error_invalid_key(&format!("Failed to parse ephemeral public key: {}", e)))?;
-                let priv_ec = openssl::ec::EcKey::private_key_from_der(&self.ec_keypair.privkey)
-                    .map_err(|e| CryptoError::new_error_invalid_key(&format!("Failed to parse EC private key: {}", e)))?;
-
-                let shared_secret = {
-                    let priv_pkey = PKey::from_ec_key(priv_ec)
-                        .map_err(|e| CryptoError::new_error_key_generation(&format!("Failed to create PKey from private key: {}", e)))?;
-                    let pub_pkey = PKey::from_ec_key(eph_pub)
-                        .map_err(|e| CryptoError::new_error_key_generation(&format!("Failed to create PKey from ephemeral public key: {}", e)))?;
-                    let mut deriver = openssl::derive::Deriver::new(&priv_pkey)
-                        .map_err(|e| CryptoError::new_error_openssl(e))?;
-                    deriver
-                        .set_peer(&pub_pkey)
-                        .map_err(|e| CryptoError::new_error_openssl(e))?;
-                    deriver
-                        .derive_to_vec()
-                        .map_err(|e| CryptoError::new_error_openssl(e))?
-                };
-
-                let mut hasher = openssl::hash::Hasher::new(MessageDigest::sha256())
-                    .map_err(|e| CryptoError::new_error_openssl(e))?;
-                hasher
-                    .update(&shared_secret)
-                    .map_err(|e| CryptoError::new_error_openssl(e))?;
-                let digest = hasher
-                    .finish()
-                    .map_err(|e| CryptoError::new_error_openssl(e))?;
-                let aes_key = &digest[..32];
+                let aes_key = Self::derive_shared_secret(&receiver.ec_keypair.privkey, &sender.ec_keypair.pubkey)?;
 
                 let cipher = openssl::symm::Cipher::aes_256_gcm();
                 let (ciphertext, tag) = package.ciphertext.split_at(package.ciphertext.len() - 16);
@@ -475,7 +465,7 @@ impl Keyring {
                 let mut crypter = openssl::symm::Crypter::new(
                     cipher,
                     openssl::symm::Mode::Decrypt,
-                    aes_key,
+                    &aes_key[..32],
                     Some(&package.iv),
                 )
                 .map_err(|e| CryptoError::new_error_openssl(e))?;
@@ -494,6 +484,26 @@ impl Keyring {
             _ => Err(CryptoError::new_error_invalid_input("Invalid decryption algorithm flag")),
         }
     }
+
+
+    pub fn encrypt_to(
+        &self,
+        receiver: &Keyring,
+        flags: u8,
+        plaintext: &[u8],
+    ) -> Result<EncryptedPackage, CryptoError> {
+        Keyring::encrypt(self, receiver, flags, plaintext)
+    }
+
+    pub fn decrypt_from(
+        &self,
+        sender: &Keyring,
+        flags: u8,
+        package: &EncryptedPackage,
+    ) -> Result<Vec<u8>, CryptoError> {
+        Keyring::decrypt(self, sender, flags, package)
+    }
+
 
     pub fn sign(&self, flags: u8, data: &[u8]) -> Result<Vec<u8>, CryptoError> {
         if data.is_empty() {
@@ -681,7 +691,6 @@ mod tests {
     use std::path::Path;
     use tempfile::TempDir;
 
-
     #[test]
     fn ec_keypair_generation() {
         let keypair = EcKeyPair::new().expect("Failed to generate EC keypair");
@@ -715,43 +724,6 @@ mod tests {
     }
 
     #[test]
-    fn keyring_encrypt_decrypt_rsa() {
-        let keyring = Keyring::new().expect("Failed to create keyring");
-        let plaintext = b"Secret message";
-
-        let package = keyring.encrypt(ALGORITHM_RSA, plaintext).expect("Encryption failed");
-        assert!(!package.encrypted_key.is_empty());
-        assert!(!package.iv.is_empty());
-        assert!(!package.ciphertext.is_empty());
-
-        let decrypted = keyring.decrypt(ALGORITHM_RSA, &package).expect("Decryption failed");
-        assert_eq!(decrypted, plaintext);
-    }
-
-    #[test]
-    fn keyring_encrypt_ecsa_should_fail() {
-        let keyring = Keyring::new().unwrap();
-        let plaintext = b"Secret message";
-        let res = keyring.encrypt(ALGORITHM_ECDSA, plaintext);
-        assert!(res.is_err());
-        assert!(matches!(res, Err(CryptoError::ErrorInvalidInput { .. })));
-    }
-
-    #[test]
-    fn keyring_decrypt_ecdsa_should_fail() {
-        let keyring = Keyring::new().unwrap();
-        let package = EncryptedPackage {
-            encrypted_key: vec![],
-            ephemeral_pubkey: vec![],
-            iv: vec![],
-            ciphertext: vec![],
-        };
-        let res = keyring.decrypt(ALGORITHM_ECDSA, &package);
-        assert!(res.is_err());
-        assert!(matches!(res, Err(CryptoError::ErrorInvalidInput { .. })));
-    }
-
-    #[test]
     fn keyring_sign_and_verify() {
         let keyring = Keyring::new().unwrap();
         let data = b"sign me";
@@ -769,18 +741,110 @@ mod tests {
     }
 
     #[test]
-    fn keyring_encrypt_decrypt_ecdhe() {
+    fn test_self_encrypt_decrypt() {
         let keyring = Keyring::new().expect("Failed to create keyring");
-        let plaintext = b"Secret message for ECDHE";
+        let message = b"Self-encryption test";
 
-        let package = keyring.encrypt(ALGORITHM_ECDHE, plaintext).expect("ECDHE encryption failed");
-        assert!(package.encrypted_key.is_empty(), "ECDHE should not use encrypted_key");
-        assert!(!package.ephemeral_pubkey.is_empty(), "ECDHE should include ephemeral public key");
-        assert!(!package.iv.is_empty(), "IV should not be empty");
-        assert!(!package.ciphertext.is_empty(), "Ciphertext should not be empty");
+        let package_rsa = Keyring::encrypt(&keyring, &keyring, ALGORITHM_RSA, message)
+            .expect("RSA encryption failed");
+        let decrypted_rsa = Keyring::decrypt(&keyring, &keyring, ALGORITHM_RSA, &package_rsa)
+            .expect("RSA decryption failed");
+        assert_eq!(decrypted_rsa, message);
 
-        let decrypted = keyring.decrypt(ALGORITHM_ECDHE, &package).expect("ECDHE decryption failed");
-        assert_eq!(decrypted, plaintext, "Decrypted plaintext does not match original");
+        let package_ecdhe = Keyring::encrypt(&keyring, &keyring, ALGORITHM_ECDHE, message)
+            .expect("ECDHE encryption failed");
+        let decrypted_ecdhe = Keyring::decrypt(&keyring, &keyring, ALGORITHM_ECDHE, &package_ecdhe)
+            .expect("ECDHE decryption failed");
+        assert_eq!(decrypted_ecdhe, message);
+    }
+
+    #[test]
+    fn test_rsa_encrypt_decrypt() {
+        let alice_keyring = Keyring::new().expect("Failed to create Alice's keyring");
+        let bob_keyring = Keyring::new().expect("Failed to create Bob's keyring");
+
+        let alice_message = b"Hello, Bob! From Alice.";
+
+        let package_rsa = Keyring::encrypt(
+            &alice_keyring,
+            &bob_keyring,
+            ALGORITHM_RSA,
+            alice_message,
+        ).expect("Alice RSA encryption failed");
+
+        let decrypted_rsa = Keyring::decrypt(
+            &bob_keyring,
+            &alice_keyring,
+            ALGORITHM_RSA,
+            &package_rsa,
+        ).expect("Bob RSA decryption failed");
+
+        assert_eq!(
+            decrypted_rsa,
+            alice_message,
+            "Bob RSA decryption did not match original message"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&decrypted_rsa),
+            "Hello, Bob! From Alice.",
+            "RSA decrypted message content mismatch"
+        );
+    }
+
+    #[test]
+    fn test_ecdhe_encrypt_decrypt() {
+        let alice_keyring = Keyring::new().expect("Failed to create Alice's keyring");
+        let bob_keyring = Keyring::new().expect("Failed to create Bob's keyring");
+
+        let alice_message = b"Hello, Bob! From Alice.";
+
+        let package_ecdhe = Keyring::encrypt(
+            &alice_keyring,
+            &bob_keyring,
+            ALGORITHM_ECDHE,
+            alice_message,
+        ).expect("Alice ECDHE encryption failed");
+
+        let decrypted_ecdhe = Keyring::decrypt(
+            &bob_keyring,
+            &alice_keyring,
+            ALGORITHM_ECDHE,
+            &package_ecdhe,
+        ).expect("Bob ECDHE decryption failed");
+
+        assert_eq!(
+            decrypted_ecdhe,
+            alice_message,
+            "Bob ECDHE decryption did not match original message"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&decrypted_ecdhe),
+            "Hello, Bob! From Alice.",
+            "ECDHE decrypted message content mismatch"
+        );
+    }
+
+    #[test]
+    fn keyring_encrypt_ecsa_should_fail() {
+        let keyring = Keyring::new().unwrap();
+        let plaintext = b"Secret message";
+        let res = Keyring::encrypt(&keyring, &keyring, ALGORITHM_ECDSA, plaintext);
+        assert!(res.is_err());
+        assert!(matches!(res, Err(CryptoError::ErrorInvalidInput { .. })));
+    }
+
+    #[test]
+    fn keyring_decrypt_ecdsa_should_fail() {
+        let keyring = Keyring::new().unwrap();
+        let package = EncryptedPackage {
+            encrypted_key: vec![],
+            ephemeral_pubkey: vec![],
+            iv: vec![],
+            ciphertext: vec![],
+        };
+        let res = Keyring::decrypt(&keyring, &keyring, ALGORITHM_ECDSA, &package);
+        assert!(res.is_err());
+        assert!(matches!(res, Err(CryptoError::ErrorInvalidInput { .. })));
     }
 
     #[test]
@@ -823,22 +887,120 @@ mod tests {
     fn ecdhe_encrypt_decrypt_empty() {
         let keyring = Keyring::new().unwrap();
         let plaintext = b"";
-        let result = keyring.encrypt(ALGORITHM_ECDHE, plaintext);
+        let result = Keyring::encrypt(&keyring, &keyring, ALGORITHM_ECDHE, plaintext);
         assert!(matches!(result, Err(CryptoError::ErrorInvalidInput { .. })));
     }
 
     #[test]
     fn ecdhe_decrypt_invalid_ephemeral_key() {
-        let keyring = Keyring::new().unwrap();
+        let sender_keyring = Keyring::new().expect("Failed to create sender keyring");
+        let receiver_keyring = Keyring::new().expect("Failed to create receiver keyring");
+
         let package = EncryptedPackage {
             encrypted_key: vec![],
             ephemeral_pubkey: vec![0u8; 100],
             iv: vec![0u8; 12],
-            ciphertext: vec![0u8; 116], 
+            ciphertext: vec![0u8; 116],
         };
-        let result = keyring.decrypt(ALGORITHM_ECDHE, &package);
-        assert!(matches!(result, Err(CryptoError::ErrorInvalidKey { .. })));
+
+        let result = Keyring::decrypt(
+            &receiver_keyring,
+            &sender_keyring,
+            ALGORITHM_ECDHE,
+            &package,
+        );
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(CryptoError::ErrorInvalidKey { .. })
+        ));
     }
+
+
+    #[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encrypt_decrypt_to_from_rsa() {
+        let alice = Keyring::new().expect("Failed to create Alice's keyring");
+        let bob = Keyring::new().expect("Failed to create Bob's keyring");
+        let message = b"Hello Bob, RSA!";
+
+        let package = alice
+            .encrypt_to(&bob, ALGORITHM_RSA, message)
+            .expect("RSA encryption failed");
+        let decrypted = bob
+            .decrypt_from(&alice, ALGORITHM_RSA, &package)
+            .expect("RSA decryption failed");
+
+        assert_eq!(decrypted, message, "RSA decrypted message mismatch");
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_to_from_ecdhe() {
+        let alice = Keyring::new().expect("Failed to create Alice's keyring");
+        let bob = Keyring::new().expect("Failed to create Bob's keyring");
+        let message = b"Hello Bob, ECDHE!";
+
+        let package = alice
+            .encrypt_to(&bob, ALGORITHM_ECDHE, message)
+            .expect("ECDHE encryption failed");
+        let decrypted = bob
+            .decrypt_from(&alice, ALGORITHM_ECDHE, &package)
+            .expect("ECDHE decryption failed");
+
+        assert_eq!(decrypted, message, "ECDHE decrypted message mismatch");
+    }
+
+    #[test]
+    fn test_self_encrypt_decrypt() {
+        let keyring = Keyring::new().expect("Failed to create keyring");
+        let message = b"Self message";
+
+        let package_rsa = keyring
+            .encrypt_to(&keyring, ALGORITHM_RSA, message)
+            .expect("RSA self-encryption failed");
+        let decrypted_rsa = keyring
+            .decrypt_from(&keyring, ALGORITHM_RSA, &package_rsa)
+            .expect("RSA self-decryption failed");
+        assert_eq!(decrypted_rsa, message);
+
+        let package_ecdhe = keyring
+            .encrypt_to(&keyring, ALGORITHM_ECDHE, message)
+            .expect("ECDHE self-encryption failed");
+        let decrypted_ecdhe = keyring
+            .decrypt_from(&keyring, ALGORITHM_ECDHE, &package_ecdhe)
+            .expect("ECDHE self-decryption failed");
+        assert_eq!(decrypted_ecdhe, message);
+    }
+
+    #[test]
+    fn test_encrypt_to_invalid_algorithm() {
+        let alice = Keyring::new().unwrap();
+        let bob = Keyring::new().unwrap();
+        let message = b"Invalid test";
+
+        let res = alice.encrypt_to(&bob, 99, message);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_decrypt_from_invalid_algorithm() {
+        let keyring = Keyring::new().unwrap();
+        let package = EncryptedPackage {
+            encrypted_key: vec![],
+            ephemeral_pubkey: vec![],
+            iv: vec![],
+            ciphertext: vec![],
+        };
+
+        let res = keyring.decrypt_from(&keyring, 99, &package);
+        assert!(res.is_err());
+    }
+}
+
 
     #[test]
     fn keyring_write_read_disk() {
