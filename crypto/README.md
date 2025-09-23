@@ -113,17 +113,41 @@ assert!(is_valid);
 
 Encryption and Decryption (RSA Hybrid)
 ```rust
-let plaintext = b"Secret message";
-let package = keyring.encrypt(crypto::ALGORITHM_RSA, plaintext)?;
-let decrypted = keyring.decrypt(crypto::ALGORITHM_RSA, &package)?;
-assert_eq!(decrypted, plaintext);
+let data = b"Hello, world!";
+let package_rsa = keyring.encrypt_to(&keyring, crypto::ALGORITHM_RSA, data).expect("RSA encryption failed");
+let decrypted_rsa = keyring.decrypt_from(&keyring, crypto::ALGORITHM_RSA, &package_rsa).expect("RSA decryption failed");
+assert_eq!(decrypted_rsa, data);
+
 ```
 
 Encryption and Decryption (ECDHE Hybrid)
 ```rust
-let plaintext = b"Secret message with forward secrecy";
-let package = keyring.encrypt(crypto::ALGORITHM_ECDHE, plaintext)?;
-let decrypted = keyring.decrypt(crypto::ALGORITHM_ECDHE, &package)?;
+let data = b"Secret message with forward secrecy";
+let package_ecdhe = keyring.encrypt_to(&keyring, crypto::ALGORITHM_ECDHE, data).expect("ECDHE encryption failed");
+let decrypted_ecdhe = keyring.decrypt_from(&keyring, crypto::ALGORITHM_ECDHE, &package_ecdhe).expect("ECDHE decryption failed");
+assert_eq!(decrypted_ecdhe, data);
+```
+
+Two-party encryption - RSA Hybrid Encryption and Decryption:
+
+
+```rust
+let alice_keyring = Keyring::new().expect("Failed to create Alice's keyring");
+let bob_keyring = Keyring::new().expect("Failed to create Bob's keyring");
+let plaintext = b"Secret message from Alice to Bob";
+let package = alice_keyring.encrypt_to(&bob_keyring, crypto::ALGORITHM_RSA, plaintext)?;
+let decrypted = bob_keyring.decrypt_from(&alice_keyring, crypto::ALGORITHM_RSA, &package)?;
+assert_eq!(decrypted, plaintext);
+```
+
+Two-party encryption - ECDHE Hybrid Encryption and Decryption:
+
+```rust
+let alice_keyring = Keyring::new().expect("Failed to create Alice's keyring");
+let bob_keyring = Keyring::new().expect("Failed to create Bob's keyring");
+let plaintext = b"Secret message with forward secrecy from Alice to Bob";
+let package = alice_keyring.encrypt_to(&bob_keyring, crypto::ALGORITHM_ECDHE, plaintext)?;
+let decrypted = bob_keyring.decrypt_from(&alice_keyring, crypto::ALGORITHM_ECDHE, &package)?;
 assert_eq!(decrypted, plaintext);
 ```
 
