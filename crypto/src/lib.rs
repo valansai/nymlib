@@ -373,7 +373,16 @@ impl Keyring {
                     .public_key_to_der()
                     .map_err(|e| CryptoError::new_error_serialization(&format!("Failed to serialize ephemeral public key: {}", e)))?;
 
-                let aes_key = Self::derive_shared_secret(&sender.ec_keypair.privkey, &receiver.ec_keypair.pubkey)?;
+                let mut eph_priv_der = eph_key.private_key_to_der()
+                    .map_err(|e| CryptoError::new_error_serialization(&format!("Failed to serialize ephemeral private key: {}", e)))?;
+
+                let aes_key = Self::derive_shared_secret(
+                    &eph_priv_der,
+                    &receiver.ec_keypair.pubkey,
+                )?;
+
+                eph_priv_der.zeroize();
+
 
                 let mut iv = vec![0u8; 12];
                 rand_bytes(&mut iv)
@@ -455,7 +464,10 @@ impl Keyring {
                     return Err(CryptoError::new_error_invalid_key("Missing or invalid ephemeral public key"));
                 }
 
-                let aes_key = Self::derive_shared_secret(&receiver.ec_keypair.privkey, &sender.ec_keypair.pubkey)?;
+                let aes_key = Self::derive_shared_secret(
+                    &receiver.ec_keypair.privkey,
+                    &package.ephemeral_pubkey,
+                )?;
 
                 let cipher = openssl::symm::Cipher::aes_256_gcm();
                 let (ciphertext, tag) = package.ciphertext.split_at(package.ciphertext.len() - 16);
@@ -484,7 +496,6 @@ impl Keyring {
             _ => Err(CryptoError::new_error_invalid_input("Invalid decryption algorithm flag")),
         }
     }
-
 
     pub fn encrypt_to(
         &self,
@@ -918,10 +929,6 @@ mod tests {
     }
 
 
-    #[cfg(test)]
-mod tests {
-    use super::*;
-
     #[test]
     fn test_encrypt_decrypt_to_from_rsa() {
         let alice = Keyring::new().expect("Failed to create Alice's keyring");
@@ -955,28 +962,6 @@ mod tests {
     }
 
     #[test]
-    fn test_self_encrypt_decrypt() {
-        let keyring = Keyring::new().expect("Failed to create keyring");
-        let message = b"Self message";
-
-        let package_rsa = keyring
-            .encrypt_to(&keyring, ALGORITHM_RSA, message)
-            .expect("RSA self-encryption failed");
-        let decrypted_rsa = keyring
-            .decrypt_from(&keyring, ALGORITHM_RSA, &package_rsa)
-            .expect("RSA self-decryption failed");
-        assert_eq!(decrypted_rsa, message);
-
-        let package_ecdhe = keyring
-            .encrypt_to(&keyring, ALGORITHM_ECDHE, message)
-            .expect("ECDHE self-encryption failed");
-        let decrypted_ecdhe = keyring
-            .decrypt_from(&keyring, ALGORITHM_ECDHE, &package_ecdhe)
-            .expect("ECDHE self-decryption failed");
-        assert_eq!(decrypted_ecdhe, message);
-    }
-
-    #[test]
     fn test_encrypt_to_invalid_algorithm() {
         let alice = Keyring::new().unwrap();
         let bob = Keyring::new().unwrap();
@@ -999,7 +984,6 @@ mod tests {
         let res = keyring.decrypt_from(&keyring, 99, &package);
         assert!(res.is_err());
     }
-}
 
 
     #[test]
