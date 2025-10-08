@@ -47,6 +47,7 @@ use std::path::Path;
 pub const ALGORITHM_ECDSA: u8 = 1;
 pub const ALGORITHM_RSA: u8 = 2;
 pub const ALGORITHM_ECDHE: u8 = 3;
+pub const ALGORITHM_X25519: u8 = 4;
 
 const MIN_RSA_KEY_SIZE: u32 = 3072;
 
@@ -232,6 +233,56 @@ impl RsaKeyPair {
     }
 }
 
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////// X25519 ////////////////////////////////////////////////////////////
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct X25519KeyPair {
+    pub pubkey: Vec<u8>,
+    pub privkey: Vec<u8>,
+}
+
+impl Default for X25519KeyPair {
+    fn default() -> Self {
+        X25519KeyPair {
+            pubkey: vec![],
+            privkey: vec![],
+        }
+    }
+}
+
+impl Drop for X25519KeyPair {
+    fn drop(&mut self) {
+        self.privkey.zeroize();
+    }
+}
+
+impl X25519KeyPair {
+    pub fn new() -> Result<Self, CryptoError> {
+        let pkey = PKey::generate_x25519()
+            .map_err(|e| CryptoError::new_error_key_generation(&format!("Failed to generate X25519 key: {}", e)))?;
+
+        let pubkey = pkey
+            .public_key_to_der()
+            .map_err(|e| CryptoError::new_error_serialization(&format!("Failed to serialize X25519 public key: {}", e)))?;
+        let mut privkey = pkey
+            .private_key_to_der()
+            .map_err(|e| CryptoError::new_error_serialization(&format!("Failed to serialize X25519 private key: {}", e)))?;
+
+        let keypair = X25519KeyPair { pubkey, privkey: privkey.clone() };
+        privkey.zeroize();
+        Ok(keypair)
+    }
+
+    pub fn fingerprint(&self) -> Result<[u8; 32], CryptoError> {
+        if self.pubkey.is_empty() {
+            return Err(CryptoError::new_error_invalid_key("Empty public key"));
+        }
+        Ok(serialize::SerializeHash(self))
+    }
+}
+
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////// Keyring //////////////////////////////////////////////////////////
 
@@ -249,10 +300,12 @@ impl EncryptedPackage {
     }
 }
 
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Keyring {
     pub ec_keypair: EcKeyPair,
     pub rsa_keypair: RsaKeyPair,
+    pub x25519_keypair: X25519KeyPair,
 }
 
 impl Default for Keyring {
@@ -260,6 +313,7 @@ impl Default for Keyring {
         Keyring {
             ec_keypair: EcKeyPair::default(),
             rsa_keypair: RsaKeyPair::default(),
+            x25519_keypair: X25519KeyPair::default(),
         }
     }
 }
@@ -274,6 +328,7 @@ impl Keyring {
         Ok(Keyring {
             ec_keypair: EcKeyPair::new()?,
             rsa_keypair: RsaKeyPair::new()?,
+            x25519_keypair: X25519KeyPair::new()?,
         })
     }
 
@@ -297,7 +352,7 @@ impl Keyring {
         deriver
             .set_peer(&pub_pkey)
             .map_err(|e| CryptoError::new_error_openssl(e))?;
-        let shared_secret = deriver
+        let mut shared_secret = deriver
             .derive_to_vec()
             .map_err(|e| CryptoError::new_error_openssl(e))?;
 
@@ -309,6 +364,40 @@ impl Keyring {
         let digest = hasher
             .finish()
             .map_err(|e| CryptoError::new_error_openssl(e))?;
+
+        shared_secret.zeroize();
+        Ok(digest.to_vec())
+    }
+
+    // Helper function to derive shared secret for X25519
+    fn derive_x25519_shared_secret(
+        sender_privkey: &[u8],
+        receiver_pubkey: &[u8],
+    ) -> Result<Vec<u8>, CryptoError> {
+        let priv_pkey = PKey::private_key_from_der(sender_privkey)
+            .map_err(|e| CryptoError::new_error_invalid_key(&format!("Failed to parse X25519 sender private key: {}", e)))?;
+        let pub_pkey = PKey::public_key_from_der(receiver_pubkey)
+            .map_err(|e| CryptoError::new_error_invalid_key(&format!("Failed to parse X25519 receiver public key: {}", e)))?;
+
+        let mut deriver = openssl::derive::Deriver::new(&priv_pkey)
+            .map_err(|e| CryptoError::new_error_openssl(e))?;
+        deriver
+            .set_peer(&pub_pkey)
+            .map_err(|e| CryptoError::new_error_openssl(e))?;
+        let mut shared_secret = deriver
+            .derive_to_vec()
+            .map_err(|e| CryptoError::new_error_openssl(e))?;
+
+        let mut hasher = openssl::hash::Hasher::new(MessageDigest::sha256())
+            .map_err(|e| CryptoError::new_error_openssl(e))?;
+        hasher
+            .update(&shared_secret)
+            .map_err(|e| CryptoError::new_error_openssl(e))?;
+        let digest = hasher
+            .finish()
+            .map_err(|e| CryptoError::new_error_openssl(e))?;
+
+        shared_secret.zeroize();
         Ok(digest.to_vec())
     }
 
@@ -356,6 +445,8 @@ impl Keyring {
 
                 let encrypted_key = receiver.rsa_keypair.encrypt(&aes_key)?;
 
+                aes_key.zeroize();
+
                 Ok(EncryptedPackage {
                     encrypted_key,
                     ephemeral_pubkey: vec![],
@@ -376,7 +467,7 @@ impl Keyring {
                 let mut eph_priv_der = eph_key.private_key_to_der()
                     .map_err(|e| CryptoError::new_error_serialization(&format!("Failed to serialize ephemeral private key: {}", e)))?;
 
-                let aes_key = Self::derive_shared_secret(
+                let mut aes_key = Self::derive_shared_secret(
                     &eph_priv_der,
                     &receiver.ec_keypair.pubkey,
                 )?;
@@ -409,6 +500,60 @@ impl Keyring {
                 ciphertext.truncate(count);
                 ciphertext.extend_from_slice(&tag);
 
+                aes_key.zeroize();
+
+                Ok(EncryptedPackage {
+                    encrypted_key: vec![],
+                    ephemeral_pubkey: eph_pub_der,
+                    iv,
+                    ciphertext,
+                })
+            }
+            ALGORITHM_X25519 => {
+                let eph_pkey = PKey::generate_x25519()
+                    .map_err(|e| CryptoError::new_error_key_generation(&format!("Failed to generate ephemeral X25519 key: {}", e)))?;
+                let eph_pub_der = eph_pkey
+                    .public_key_to_der()
+                    .map_err(|e| CryptoError::new_error_serialization(&format!("Failed to serialize ephemeral X25519 public key: {}", e)))?;
+                let mut eph_priv_der = eph_pkey
+                    .private_key_to_der()
+                    .map_err(|e| CryptoError::new_error_serialization(&format!("Failed to serialize ephemeral X25519 private key: {}", e)))?;
+
+                // Derive shared secret
+                let mut aes_key = Self::derive_x25519_shared_secret(
+                    &eph_priv_der,
+                    &receiver.x25519_keypair.pubkey,
+                )?;
+
+                eph_priv_der.zeroize();
+
+                let mut iv = vec![0u8; 12];
+                rand_bytes(&mut iv)
+                    .map_err(|e| CryptoError::new_error_openssl(e))?;
+
+                let cipher = openssl::symm::Cipher::aes_256_gcm();
+                let mut crypter = openssl::symm::Crypter::new(
+                    cipher,
+                    openssl::symm::Mode::Encrypt,
+                    &aes_key[..32],
+                    Some(&iv),
+                )
+                .map_err(|e| CryptoError::new_error_openssl(e))?;
+
+                let mut ciphertext = vec![0; plaintext.len() + cipher.block_size()];
+                let mut tag = vec![0; 16];
+                let mut count = crypter
+                    .update(plaintext, &mut ciphertext)
+                    .map_err(|e| CryptoError::new_error_openssl(e))?;
+                count += crypter
+                    .finalize(&mut ciphertext[count..])
+                    .map_err(|e| CryptoError::new_error_openssl(e))?;
+                crypter.get_tag(&mut tag).map_err(|e| CryptoError::new_error_openssl(e))?;
+                ciphertext.truncate(count);
+                ciphertext.extend_from_slice(&tag);
+
+                aes_key.zeroize();
+
                 Ok(EncryptedPackage {
                     encrypted_key: vec![],
                     ephemeral_pubkey: eph_pub_der,
@@ -433,7 +578,7 @@ impl Keyring {
 
         match flags {
             ALGORITHM_RSA => {
-                let aes_key = receiver.rsa_keypair.decrypt(&package.encrypted_key)?;
+                let mut aes_key = receiver.rsa_keypair.decrypt(&package.encrypted_key)?;
 
                 let cipher = openssl::symm::Cipher::aes_256_gcm();
                 let (ciphertext, tag) = package.ciphertext.split_at(package.ciphertext.len() - 16);
@@ -457,6 +602,9 @@ impl Keyring {
                     .finalize(&mut plaintext[count..])
                     .map_err(|e| CryptoError::new_error_openssl(e))?;
                 plaintext.truncate(count);
+
+                aes_key.zeroize();
+
                 Ok(plaintext)
             }
             ALGORITHM_ECDHE => {
@@ -464,7 +612,7 @@ impl Keyring {
                     return Err(CryptoError::new_error_invalid_key("Missing or invalid ephemeral public key"));
                 }
 
-                let aes_key = Self::derive_shared_secret(
+                let mut aes_key = Self::derive_shared_secret(
                     &receiver.ec_keypair.privkey,
                     &package.ephemeral_pubkey,
                 )?;
@@ -491,6 +639,48 @@ impl Keyring {
                     .finalize(&mut plaintext[count..])
                     .map_err(|e| CryptoError::new_error_openssl(e))?;
                 plaintext.truncate(count);
+
+                aes_key.zeroize();
+
+                Ok(plaintext)
+            }
+            ALGORITHM_X25519 => {
+                if !package.has_ephemeral_pubkey() {
+                    return Err(CryptoError::new_error_invalid_key("Missing or invalid ephemeral public key"));
+                }
+
+                // Derive shared secret
+                let mut aes_key = Self::derive_x25519_shared_secret(
+                    &receiver.x25519_keypair.privkey,
+                    &package.ephemeral_pubkey,
+                )?;
+
+                // Decrypt using AES-256-GCM
+                let cipher = openssl::symm::Cipher::aes_256_gcm();
+                let (ciphertext, tag) = package.ciphertext.split_at(package.ciphertext.len() - 16);
+                if package.iv.len() != 12 {
+                    return Err(CryptoError::new_error_invalid_input("Invalid IV length for AES-GCM"));
+                }
+                let mut crypter = openssl::symm::Crypter::new(
+                    cipher,
+                    openssl::symm::Mode::Decrypt,
+                    &aes_key[..32],
+                    Some(&package.iv),
+                )
+                .map_err(|e| CryptoError::new_error_openssl(e))?;
+                crypter.set_tag(&tag).map_err(|e| CryptoError::new_error_openssl(e))?;
+
+                let mut plaintext = vec![0; ciphertext.len() + cipher.block_size()];
+                let mut count = crypter
+                    .update(ciphertext, &mut plaintext)
+                    .map_err(|e| CryptoError::new_error_openssl(e))?;
+                count += crypter
+                    .finalize(&mut plaintext[count..])
+                    .map_err(|e| CryptoError::new_error_openssl(e))?;
+                plaintext.truncate(count);
+
+                aes_key.zeroize();
+
                 Ok(plaintext)
             }
             _ => Err(CryptoError::new_error_invalid_input("Invalid decryption algorithm flag")),
@@ -631,6 +821,7 @@ serialize_derive::impl_serialize_for_struct! {
     target Keyring {
         readwrite(self.ec_keypair);
         readwrite(self.rsa_keypair);
+        readwrite(self.x25519_keypair);
     }
 }
 
@@ -691,6 +882,8 @@ impl_verify_for_keypair!(
 
 impl_serialize_for_keypair!(EcKeyPair);
 impl_serialize_for_keypair!(RsaKeyPair);
+impl_serialize_for_keypair!(X25519KeyPair);
+
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -835,6 +1028,40 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn test_x25519_encrypt_decrypt() {
+        let alice_keyring = Keyring::new().expect("Failed to create Alice's keyring");
+        let bob_keyring = Keyring::new().expect("Failed to create Bob's keyring");
+
+        let alice_message = b"Hello, Bob! From Alice.";
+
+        let package_x25519 = Keyring::encrypt(
+            &alice_keyring,
+            &bob_keyring,
+            ALGORITHM_X25519,
+            alice_message,
+        ).expect("Alice ECDHE encryption failed");
+
+        let decrypted_x25519 = Keyring::decrypt(
+            &bob_keyring,
+            &alice_keyring,
+            ALGORITHM_X25519,
+            &package_x25519,
+        ).expect("Bob X25519 decryption failed");
+
+        assert_eq!(
+            decrypted_x25519,
+            alice_message,
+            "Bob X25519 decryption did not match original message"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&decrypted_x25519),
+            "Hello, Bob! From Alice.",
+            "ECDHE decrypted message content mismatch"
+        );
+    }
+
     #[test]
     fn keyring_encrypt_ecsa_should_fail() {
         let keyring = Keyring::new().unwrap();
@@ -928,6 +1155,25 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn test_encrypt_decrypt_to_from_X25519() {
+        let alice = Keyring::new().expect("Failed to create Alice's keyring");
+        let bob = Keyring::new().expect("Failed to create Bob's keyring");
+        let message = b"Hello Bob, RSA!";
+
+        // Encrypt 
+        let package = alice
+            .encrypt_to(&bob, ALGORITHM_X25519, message)
+            .expect("RSA encryption failed");
+
+        // Decrypt
+        let decrypted = bob
+            .decrypt_from(&alice, ALGORITHM_X25519, &package)
+            .expect("RSA decryption failed");
+
+        assert_eq!(decrypted, message, "RSA decrypted message mismatch");
+    }
+
 
     #[test]
     fn test_encrypt_decrypt_to_from_rsa() {
@@ -935,9 +1181,13 @@ mod tests {
         let bob = Keyring::new().expect("Failed to create Bob's keyring");
         let message = b"Hello Bob, RSA!";
 
+
+        // Encrypt
         let package = alice
             .encrypt_to(&bob, ALGORITHM_RSA, message)
             .expect("RSA encryption failed");
+
+        // Decrypt
         let decrypted = bob
             .decrypt_from(&alice, ALGORITHM_RSA, &package)
             .expect("RSA decryption failed");
@@ -951,9 +1201,13 @@ mod tests {
         let bob = Keyring::new().expect("Failed to create Bob's keyring");
         let message = b"Hello Bob, ECDHE!";
 
+
+        // Encrypt
         let package = alice
             .encrypt_to(&bob, ALGORITHM_ECDHE, message)
             .expect("ECDHE encryption failed");
+
+        // Decrypt
         let decrypted = bob
             .decrypt_from(&alice, ALGORITHM_ECDHE, &package)
             .expect("ECDHE decryption failed");
