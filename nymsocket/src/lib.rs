@@ -44,6 +44,7 @@ use nym_sdk::mixnet::{
     StoragePaths
 };
 
+
 use serialize::{
     DataStream, 
     GetHash, 
@@ -63,7 +64,6 @@ use tokio::time::{
 };
 
 use std::collections::HashMap;
-
 
 
 ////////////////////////////////////////// SockAddr
@@ -254,13 +254,17 @@ pub struct StandardClient {
     pub client: Arc<Mutex<Option<MixnetClient>>>,
 }
 
-#[derive(Clone)]
-pub struct EphemeralClient {
-    pub client: Arc<Mutex<Option<MixnetClient>>>,
-}
 
 impl StandardClient {
     pub async fn new(client_path: &str) -> Option<Self> {
+        Self::init_client(client_path, None).await
+    }
+
+    pub async fn new_with_gateway(client_path: &str, gateway: &str) -> Option<Self> {
+        Self::init_client(client_path, Some(gateway)).await
+    }
+
+    async fn init_client(client_path: &str, gateway: Option<&str>) -> Option<Self> {
         let config_dir = PathBuf::from(client_path);
         let storage_paths = match StoragePaths::new_from_dir(&config_dir) {
             Ok(paths) => paths,
@@ -270,20 +274,26 @@ impl StandardClient {
             }
         };
 
-        let mixnet_client = match MixnetClientBuilder::new_with_default_storage(storage_paths).await {
+        let mut builder = match MixnetClientBuilder::new_with_default_storage(storage_paths).await {
             Ok(builder) => builder,
             Err(e) => {
                 println!("StandardClient() - Failed to initialize Mixnet client builder: {}", e);
                 return None;
             }
+        };
+
+        if let Some(gw) = gateway {
+            builder = builder.request_gateway(gw.to_string());
         }
-        .build()
-        .map_err(|e| println!("StandardClient() - Failed to build Mixnet client: {}", e))
-        .ok()?
-        .connect_to_mixnet()
-        .await
-        .map_err(|e| println!("StandardClient() - Failed to connect to Mixnet: {}", e))
-        .ok()?;
+
+        let mixnet_client = builder
+            .build()
+            .map_err(|e| println!("StandardClient() - Failed to build Mixnet client: {}", e))
+            .ok()?
+            .connect_to_mixnet()
+            .await
+            .map_err(|e| println!("StandardClient() - Failed to connect to Mixnet: {}", e))
+            .ok()?;
 
         Some(Self {
             path: client_path.to_string(),
@@ -293,9 +303,29 @@ impl StandardClient {
     }
 }
 
+#[derive(Clone)]
+pub struct EphemeralClient {
+    pub client: Arc<Mutex<Option<MixnetClient>>>,
+}
+
+
 impl EphemeralClient {
     pub async fn new() -> Option<Self> {
-        let client = MixnetClientBuilder::new_ephemeral()
+        Self::init_client(None).await
+    }
+
+    pub async fn new_with_gateway(gateway: &str) -> Option<Self> {
+        Self::init_client(Some(gateway)).await
+    }
+
+
+    async fn init_client(gateway: Option<&str>) -> Option<Self> {
+        let mut builder = MixnetClientBuilder::new_ephemeral();
+        if let Some(gw) = gateway {
+            builder = builder.request_gateway(gw.to_string());
+        }
+        
+        let client = builder
             .build()
             .map_err(|e| println!("EphemeralClient() - Failed to build ephemeral Mixnet client: {}", e))
             .ok()?
@@ -307,8 +337,7 @@ impl EphemeralClient {
         Some(Self {
             client: Arc::new(Mutex::new(Some(client))),
         })
-    }
-}
+    }}
 
 #[derive(Clone)]
 pub enum Client {
@@ -711,8 +740,50 @@ impl Socket {
     }
 }
 
+
+#[macro_export]
+macro_rules! impl_socket_new_with_gateway {
+    ($method_name:ident, $variant:ident, $type:ty, $client_constructor:ident $(, $param:ident: $param_type:ty)*) => {
+        impl Socket {
+            pub async fn $method_name($($param: $param_type,)* mode: SocketMode) -> Option<Self> {
+                let client = <$type>::$client_constructor($($param,)*).await?;
+                Some(Self {
+                    client: Client::$variant(client), 
+                    mode,
+                    metrics: SocketMetrics::default(),
+                    already_send: Vec::new(),
+                    check_stale: false,
+                    stale_expiration_time: u64::MAX,
+                    muted_addresses: Arc::new(Mutex::new(HashMap::new())),
+                    recv: Arc::new(Mutex::new(Vec::new())),
+                    extra_surbs: None,
+                })
+            }
+        }
+    };
+}
+
+impl_socket_new_with_gateway!(
+    new_standard_with_gateway,
+    Standard,
+    StandardClient,
+    new_with_gateway,
+    client_path: &str,
+    gateway: &str
+);
+
+impl_socket_new_with_gateway!(
+    new_ephemeral_with_gateway,
+    Ephemeral,
+    EphemeralClient,
+    new_with_gateway,
+    gateway: &str
+);
+
+
+
 #[cfg(test)]
-mod tests {
+mod socket {
     use super::*;
     use rand::rngs::OsRng;
 
@@ -850,7 +921,7 @@ mod tests {
     #[tokio::test]
     async fn test_standard_client_creation_and_methods() {
         sleep(Duration::from_secs(3)).await;
-        let temp_path = std::env::temp_dir().join("nym_test_configuration");
+        let temp_path = std::env::temp_dir().join("nym_test_configuration_0");
         std::fs::create_dir_all(&temp_path).unwrap();
 
         let client = StandardClient::new(temp_path.to_str().unwrap()).await;
@@ -866,6 +937,78 @@ mod tests {
         }
 
         std::fs::remove_dir_all(&temp_path).unwrap();
+    }
+
+    // TODO: Do not depend on a single gateway.
+
+    #[tokio::test]
+    async fn test_socket_send_with_gateway() {
+        sleep(Duration::from_secs(3)).await;
+        use std::fs;
+
+        let temp_dir = std::env::temp_dir().join("nym_test_configuration_1");
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let gateway_id = "J3Wfpxca9mwnbipScWTkKCrbNnZ9J5M4YmjKCFTnXwWN"; 
+        let mut socket = Socket::new_standard_with_gateway(
+            temp_dir.to_str().unwrap(),
+            gateway_id,
+            SocketMode::Individual,
+        )
+        .await
+        .expect("Failed to create gateway-based socket");
+
+        let mut listener = socket.clone();
+        let listener_handle = tokio::spawn(async move {
+            listener.listen().await;
+        });
+
+        let addr = socket.getsockaddr().await.expect("Failed to get address");
+
+        let msg_data = b"Hello Nym".to_vec();
+        let sent = socket.send(msg_data.clone(), addr.clone()).await;
+        assert!(sent, "Failed to send message to self via the selected gateway");
+
+        sleep(Duration::from_secs(15)).await;
+
+        let received_messages: Vec<_> = {
+            let mut messages = socket.recv.lock().await;
+            messages.drain(..).collect()
+        };
+
+        assert!(!received_messages.is_empty(), "No message received via gateway");
+
+        socket.disconnect().await;
+        fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_standard_client_with_gateway() {
+        sleep(Duration::from_secs(3)).await;
+        let temp_path = std::env::temp_dir().join("nym_test_configuration_2");
+        std::fs::create_dir_all(&temp_path).expect("Failed to create temporary directory");
+
+        let gateway_id = "5daGJKdqfHrNx9DVnTau61Pvq2NAqXGRj8Lv4N71XQYg";
+        let client = StandardClient::new_with_gateway(temp_path.to_str().expect("Invalid temp path"), gateway_id).await;
+        assert!(client.is_some(), "Failed to create StandardClient with gateway ID: {}", gateway_id);
+
+        std::fs::remove_dir_all(&temp_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_ephemeral_client_with_gateway() {
+        sleep(Duration::from_secs(3)).await;
+        let gateway_id = "7ntzmDZRvG4a1pnDBU4Bg1RiAmLwmqXV5sZGNw68Ce14";
+        let client = EphemeralClient::new_with_gateway(gateway_id).await;
+        assert!(client.is_some(), "Failed to create StandardClient with gateway ID: {}", gateway_id);
+    }
+
+    #[tokio::test]
+    async fn test_ephemeral_client_with_gateway_fail() {
+        sleep(Duration::from_secs(3)).await;
+        let gateway_id = "28zcSsvjXsAX7C28ko2H3Lt55X4TYxfZYkPADxKXZHUj"; // Invalid ID (swapped 3 with 2 at start)
+        let client = EphemeralClient::new_with_gateway(gateway_id).await;
+        assert!(client.is_none(), "EphemeralClient unexpectedly created with invalid gateway ID: {}", gateway_id);
     }
 
     #[tokio::test]
@@ -893,7 +1036,7 @@ mod tests {
         let sent = anonymous_socket.send(msg_data.clone(), addr.clone()).await;
         assert!(sent, "Failed to send message to self in Anonymous mode");
 
-        sleep(Duration::from_secs(6)).await;
+        sleep(Duration::from_secs(15)).await;
 
         let received_messages: Vec<_> = {
             let mut messages = socket.recv.lock().await;
@@ -959,8 +1102,6 @@ mod tests {
         }
     }
 
-
-    
     #[tokio::test]
     async fn test_mute_address() {
         let mut socket = Socket::new_ephemeral(SocketMode::Individual)
@@ -986,7 +1127,7 @@ mod tests {
         let sent = socket.send(msg_data.clone(), addr.clone()).await;
         assert!(sent, "Failed to send message");
 
-        sleep(Duration::from_secs(10)).await;
+        sleep(Duration::from_secs(15)).await;
 
         {
             let received_messages = socket.recv.lock().await;
@@ -998,7 +1139,7 @@ mod tests {
         let sent = socket.send(msg_data.clone(), addr.clone()).await;
         assert!(sent, "Failed to send message after mute expiration");
 
-        sleep(Duration::from_secs(10)).await;
+        sleep(Duration::from_secs(15)).await;
 
         {
             let received_messages = socket.recv.lock().await;
@@ -1015,7 +1156,7 @@ mod tests {
         let sent = socket.send(b"Unmuted message".to_vec(), addr).await;
         assert!(sent, "Failed to send message after unmuting");
 
-        sleep(Duration::from_secs(10)).await;
+        sleep(Duration::from_secs(15)).await;
 
         {
             let received_messages = socket.recv.lock().await;
