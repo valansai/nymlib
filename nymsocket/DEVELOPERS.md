@@ -74,7 +74,9 @@ Both variants wrap a `MixnetClient` from `nym_sdk` in an `Arc<Mutex<Option<Mixne
 | Method | Parameters | Return Type | Description |
 |--------|------------|-------------|-------------|
 | `StandardClient::new` | `client_path: &str` | `Option<Self>` | Creates a new `StandardClient` with a persistent configuration directory at `client_path`. Initializes storage paths and connects to the Nym mixnet. Returns `None` if initialization or connection fails. |
+| `StandardClient::new_with_gateway` | `client_path: &str, gateway: &str` | `Option<Self>` | Creates a new `StandardClient` with a persistent configuration directory at `client_path` and connects to the specified `gateway` (Nym gateway ID). Returns `None` if initialization or connection fails. |
 | `EphemeralClient::new` | `()` | `Option<Self>` | Creates a new `EphemeralClient` with no persistent storage (in-memory). Connects to the Nym mixnet. Returns `None` if initialization or connection fails. |
+| `EphemeralClient::new_with_gateway` | `gateway: &str` | `Option<Self>` | Creates a new `EphemeralClient` and connects to the specified `gateway` (Nym gateway ID). Returns `None` if initialization or connection fails. |
 | `getaddr` | `&self` | `Option<Recipient>` | Returns the `Recipient` address of the underlying mixnet client, if available. |
 | `getsockaddr` | `&self` | `Option<SockAddr>` | Returns the `SockAddr` representation of the underlying mixnet client's address (as a `NymAddress`), if available. |
 | `disconnect` | `&self` | `()` | Disconnects the underlying mixnet client, closing the connection to the Nym mixnet. |
@@ -93,7 +95,9 @@ It includes features like message filtering (staleness, muted addresses), metric
 | Method | Parameters | Return Type | Description |
 |--------|------------|-------------|-------------|
 | `new_standard` | `client_path: &str, mode: SocketMode` | `Option<Self>` | Creates a new `Socket` instance with a standard client using a persistent configuration directory specified by `client_path`. The `mode` determines whether the socket operates in `Anonymous`, `Individual`, or `Null` mode. Returns `None` if client initialization fails. |
+| `new_standard_with_gateway` | `client_path: &str, gateway: &str, mode: SocketMode` | `Option<Self>` | Creates a new `Socket` instance with a standard client using a persistent configuration directory at `client_path` and the specified `gateway` (Nym gateway ID). The `mode` determines the communication mode. Returns `None` if client initialization fails. |
 | `new_ephemeral` | `mode: SocketMode` | `Option<Self>` | Creates a new `Socket` instance with an ephemeral client (no persistent storage). The `mode` determines the communication mode. Returns `None` if client initialization fails. |
+| `new_ephemeral_with_gateway` | `gateway: &str, mode: SocketMode` | `Option<Self>` | Creates a new `Socket` instance with an ephemeral client and the specified `gateway` (Nym gateway ID). The `mode` determines the communication mode. Returns `None` if client initialization fails. |
 | `mute_address` | `address: impl Into<SockAddr>, duration_secs: u64` | `()` | Mutes messages from the specified `address` for `duration_secs` seconds by adding it to the muted addresses list. The address is hashed for storage. |
 | `unmute_address` | `address: impl Into<SockAddr>` | `()` | Removes the specified `address` from the muted addresses list, allowing messages from it to be received again. |
 | `listen` | `&mut self` | `()` | Listens for incoming messages on the mixnet. Filters out stale messages (if `check_stale` is enabled) and messages from muted addresses. Stores received messages in the `recv` vector. Stops when a stop signal is received. |
