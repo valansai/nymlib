@@ -769,6 +769,7 @@ impl From<Vec<u8>> for DataStream {
     }
 }
 
+
 impl<T: Serialize> std::ops::Shl<T> for &mut DataStream {
     type Output = Self;
 
@@ -793,6 +794,13 @@ impl<T: Serialize> std::ops::Shr<&mut T> for &mut DataStream {
     fn shr(mut self, val: &mut T) -> Self::Output {
         val.unserialize(self, self.n_type, self.n_version).expect("Deserialization failed");
         self
+    }
+}
+
+impl AsRef<[u8]> for DataStream {
+    #[inline(always)]
+    fn as_ref(&self) -> &[u8] {
+        &self.data
     }
 }
 
